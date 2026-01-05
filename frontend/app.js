@@ -638,3 +638,70 @@ btnCriar.onclick = async () => {
   draw();
   setEmptyState();
 })();
+// =======================
+// PUSH SETUP (iPhone / PWA)
+// =======================
+const btnPush = document.getElementById("btnPush");
+const pushText = document.getElementById("pushText");
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function setupPush(){
+  try{
+    if (!("serviceWorker" in navigator)) {
+      pushText.textContent = "Push não suportado aqui.";
+      return;
+    }
+
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+    if (!isStandalone) {
+      pushText.textContent = "No iPhone: use 'Adicionar à Tela de Início'.";
+      return;
+    }
+
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      pushText.textContent = "Permissão negada.";
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    const keyResp = await fetch("/push/public-key");
+    const keyJson = await keyResp.json();
+    const publicKey = keyJson.publicKey;
+
+    if (!publicKey) {
+      pushText.textContent = "Falta VAPID no servidor.";
+      return;
+    }
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+
+    await fetch("/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sub)
+    });
+
+    pushText.textContent = "Notificações ativadas ✅";
+  }catch{
+    pushText.textContent = "Erro ao ativar push.";
+  }
+}
+
+if (btnPush){
+  btnPush.addEventListener("click", setupPush);
+}
+
