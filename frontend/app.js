@@ -11,12 +11,16 @@ const apiText = document.getElementById("apiText");
 const ridesListEl = document.getElementById("ridesList");
 const emptyStateEl = document.getElementById("emptyState");
 
+// push ui (se existir no index.html)
+const btnPush = document.getElementById("btnPush");
+const pushText = document.getElementById("pushText");
+
 const watchers = new Map();
 
 /* =======================
    💾 PERSISTÊNCIA
    ======================= */
-const STORAGE_KEY = "md_open_rides_v4";
+const STORAGE_KEY = "md_open_rides_v5";
 
 function loadSavedRides(){
   try{
@@ -44,11 +48,11 @@ function saveRides(){
       relaunchOf: w.relaunchOf || null,
       relaunchedTo: w.relaunchedTo || null,
       status: w.status || "",
+      pushed: Boolean(w.pushed)
     }));
 
     data.sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0));
-    const limited = data.slice(0, 80);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(limited));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data.slice(0, 120)));
   }catch{}
 }
 
@@ -131,22 +135,17 @@ function statusClass(w){
   if (w.canceled) return "err";
   if (w.lastError) return "err";
   if (w.motorista) return "ok";
-  if (w.frozen) return "wait"; // parado por motivo final (sem remover)
+  if (w.frozen) return "wait";
   return "wait";
 }
 
-// ✅ somente “viagem finalizada” some automaticamente
+// ✅ só finalizada some
 function isTripFinished(statusText){
   const t = (statusText || "").toLowerCase();
-  return (
-    t.includes("finalizada") ||
-    t.includes("finalizado") ||
-    t.includes("concluída") ||
-    t.includes("concluido")
-  );
+  return t.includes("finalizada") || t.includes("finalizado") || t.includes("concluída") || t.includes("concluido");
 }
 
-// 🧊 estados “travados” que NÃO somem (mas param de atualizar)
+// 🧊 estados travados (não somem) -> param de atualizar e mostram relançar
 function isFrozenTerminal(statusText){
   const t = (statusText || "").toLowerCase();
   return (
@@ -160,11 +159,9 @@ function isFrozenTerminal(statusText){
   );
 }
 
-// quando mostrar botão “Relançar”
 function shouldShowRelaunch(w){
   if (w.canceled) return true;
-  const t = (w.status || "").toLowerCase();
-  return isFrozenTerminal(t);
+  return isFrozenTerminal(w.status || "");
 }
 
 /* =======================
@@ -311,13 +308,50 @@ function pickStatusText(etapaObj, statusObj, fallback){
 }
 
 /* =======================
+   PUSH DISPARO (quando aceitar)
+   ======================= */
+async function sendPushAccepted(w){
+  // manda só 1 vez por corrida
+  if (w.pushed) return;
+  if (!w.motorista) return;
+
+  w.pushed = true;
+  saveRides();
+
+  const title = "Move Driver — Motorista aceitou ✅";
+  const body = `#${w.id} • ${w.motorista} • ${w.veiculo || ""} • ${w.placa || ""}`.trim();
+
+  try{
+    await fetch("/push/notify", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        title,
+        body,
+        url: "/",
+        data: {
+          id: w.id,
+          motorista: w.motorista,
+          veiculo: w.veiculo,
+          placa: w.placa,
+          origem: w.origem,
+          destino: w.destino
+        }
+      })
+    });
+  }catch{
+    // se falhar push, não quebra atualização
+  }
+}
+
+/* =======================
    WATCHERS
    ======================= */
 async function tick(id){
   const w = watchers.get(id);
   if (!w) return;
   if (w.canceled) return;
-  if (w.frozen) return; // se está travado por status terminal (sem sumir), para de consultar
+  if (w.frozen) return;
 
   try{
     const etapaObj = await buscarEtapa(id);
@@ -332,18 +366,24 @@ async function tick(id){
     w.status    = pickStatusText(etapaObj, statusObj, w.status);
     w.lastError = "";
 
+    // buzina local
     if (!hadDriver && w.motorista && !w.alerted){
       w.alerted = true;
       buzina();
     }
 
-    // ✅ 1) se finalizou, remove automático
+    // ✅ push para todas (mesmo fora do app)
+    if (!hadDriver && w.motorista) {
+      sendPushAccepted(w);
+    }
+
+    // ✅ finalizada some
     if (isTripFinished(w.status)) {
       stopWatcher(id, { removeFromList: true });
       return;
     }
 
-    // ✅ 2) se entrou em terminal “travado” (sem motorista, excedeu etc), para de atualizar mas mantém card
+    // ✅ terminal travado fica (mostra relançar), mas para atualizar
     if (isFrozenTerminal(w.status)) {
       w.frozen = true;
       if (w.timer) clearInterval(w.timer);
@@ -361,7 +401,7 @@ async function tick(id){
   }
 }
 
-function startWatcher({ id, origem, destino, obs, createdAt, alerted, canceled, frozen, relaunchOf, relaunchedTo, status }){
+function startWatcher({ id, origem, destino, obs, createdAt, alerted, canceled, frozen, relaunchOf, relaunchedTo, status, pushed }){
   if (watchers.has(id)) return;
 
   watchers.set(id, {
@@ -381,6 +421,7 @@ function startWatcher({ id, origem, destino, obs, createdAt, alerted, canceled, 
     relaunchOf: relaunchOf || null,
     relaunchedTo: relaunchedTo || null,
     relaunching: false,
+    pushed: Boolean(pushed),
     createdAt: createdAt || Date.now(),
     timer: null
   });
@@ -433,7 +474,6 @@ async function cancelRide(id){
       return;
     }
 
-    // marca como cancelada e para atualização, mas mantém na lista
     w.canceled = true;
     w.frozen = true;
     w.status = "Cancelada";
@@ -452,10 +492,7 @@ async function cancelRide(id){
 }
 
 /* =======================
-   🔁 RELANÇAR (1 clique)
-   - cria outra corrida com os MESMOS endereços
-   - novo ID
-   - mantém a antiga como registro (e para de atualizar)
+   🔁 RELANÇAR
    ======================= */
 async function relaunchRide(oldId){
   const w = watchers.get(oldId);
@@ -471,7 +508,6 @@ async function relaunchRide(oldId){
   draw();
 
   try{
-    // cria nova solicitação
     const r = await fetch("/rides", {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
@@ -496,14 +532,12 @@ async function relaunchRide(oldId){
       return;
     }
 
-    // congela a antiga como registro e marca para qual foi relançada
     w.frozen = true;
     w.relaunching = false;
     w.relaunchedTo = Number(newId);
     if (w.timer) clearInterval(w.timer);
     w.timer = null;
 
-    // adiciona a nova como ativa (no topo)
     startWatcher({
       id: Number(newId),
       origem: w.origem,
@@ -523,33 +557,34 @@ async function relaunchRide(oldId){
 }
 
 /* =======================
-   🔎 ID (compatível)
+   🔎 ID PROFUNDO
    ======================= */
 function findSolicitacaoIdDeep(obj){
   const seen = new Set();
 
   function walk(v){
-    if (v === null || v === undefined) return null;
+    if (!v) return null;
+    if (typeof v !== "object") return null;
 
-    if (typeof v === "object"){
-      if (seen.has(v)) return null;
-      seen.add(v);
+    if (seen.has(v)) return null;
+    seen.add(v);
 
-      if (Array.isArray(v)){
-        for (const it of v){
-          const found = walk(it);
-          if (found) return found;
-        }
-        return null;
+    if (Array.isArray(v)){
+      for (const it of v){
+        const f = walk(it);
+        if (f) return f;
       }
+      return null;
+    }
 
-      for (const [k,val] of Object.entries(v)){
-        if (/^solicitacaoid$/i.test(k) || /^solicitacao_id$/i.test(k) || /^idsolicitacao$/i.test(k)){
-          const n = Number(val);
-          if (Number.isFinite(n) && n > 0) return n;
-        }
-        const found = walk(val);
-        if (found) return found;
+    for (const [k,val] of Object.entries(v)){
+      if (/^solicitacaoid$/i.test(k) || /^solicitacao_id$/i.test(k) || /^idsolicitacao$/i.test(k)){
+        const n = Number(val);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      if (typeof val === "object"){
+        const f = walk(val);
+        if (f) return f;
       }
     }
     return null;
@@ -571,7 +606,7 @@ btnCriar.onclick = async () => {
     return;
   }
 
-  // destrava áudio no iPhone
+  // destrava áudio iPhone
   buzina();
 
   btnCriar.disabled = true;
@@ -595,10 +630,7 @@ btnCriar.onclick = async () => {
     if (!id) id = findSolicitacaoIdDeep(j.result);
 
     if (!id){
-      alert(
-        "Corrida foi criada, mas não consegui localizar o ID no retorno.\n\n" +
-        JSON.stringify(j, null, 2)
-      );
+      alert("Corrida criada, mas não consegui localizar o ID no retorno.\n\n" + JSON.stringify(j, null, 2));
       return;
     }
 
@@ -631,19 +663,19 @@ btnCriar.onclick = async () => {
       frozen: Boolean(item.frozen),
       relaunchOf: item.relaunchOf || null,
       relaunchedTo: item.relaunchedTo || null,
-      status: item.status || ""
+      status: item.status || "",
+      pushed: Boolean(item.pushed)
     });
   }
 
   draw();
   setEmptyState();
 })();
-// =======================
-// PUSH SETUP (iPhone / PWA)
-// =======================
-const btnPush = document.getElementById("btnPush");
-const pushText = document.getElementById("pushText");
 
+/* =========================================================
+   PUSH: ativação no iPhone (PWA)
+   (Esse bloco só funciona se o seu index.html tiver o botão)
+========================================================= */
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -655,6 +687,8 @@ function urlBase64ToUint8Array(base64String) {
 
 async function setupPush(){
   try{
+    if (!btnPush || !pushText) return;
+
     if (!("serviceWorker" in navigator)) {
       pushText.textContent = "Push não suportado aqui.";
       return;
@@ -697,11 +731,10 @@ async function setupPush(){
 
     pushText.textContent = "Notificações ativadas ✅";
   }catch{
-    pushText.textContent = "Erro ao ativar push.";
+    if (pushText) pushText.textContent = "Erro ao ativar push.";
   }
 }
 
 if (btnPush){
   btnPush.addEventListener("click", setupPush);
 }
-
