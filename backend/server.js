@@ -25,19 +25,23 @@ function basicAuthHeader() {
 }
 
 /* =========================================================
-   PUSH (Web Push)
-   =========================================================
-   Você vai colocar 2 variáveis no Render:
-   - VAPID_PUBLIC_KEY
-   - VAPID_PRIVATE_KEY
-
-   (eu te ensino abaixo como gerar)
-========================================================= */
-
+   PUSH (Web Push) - para todas as atendentes
+   ========================================================= */
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+// guarda inscrições (vários celulares)
+const subscriptions = new Map(); // key -> subscription
+
+function subKey(sub) {
+  try { return JSON.stringify(sub); } catch { return null; }
+}
+
+function isVapidReady() {
+  return Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+}
+
+if (isVapidReady()) {
   webpush.setVapidDetails(
     "mailto:suporte@movedriver.local",
     VAPID_PUBLIC_KEY,
@@ -45,36 +49,29 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   );
 }
 
-const subscriptions = new Map(); // key -> subscription JSON string
-
-function subKey(sub) {
-  try { return JSON.stringify(sub); } catch { return null; }
-}
-
 async function pushToAll(payload) {
-  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
+  if (!isVapidReady()) return { ok: false, message: "VAPID não configurado." };
 
   const msg = JSON.stringify(payload);
-
   const toDelete = [];
+
   for (const [key, sub] of subscriptions.entries()) {
     try {
       await webpush.sendNotification(sub, msg);
     } catch (e) {
-      // se expirou / inválida, remove
       const status = e?.statusCode || e?.status || 0;
       if (status === 404 || status === 410) toDelete.push(key);
     }
   }
+
   for (const k of toDelete) subscriptions.delete(k);
+  return { ok: true, sentTo: subscriptions.size };
 }
 
-// Chave pública pro frontend assinar
 app.get("/push/public-key", (req, res) => {
   return res.json({ ok: true, publicKey: VAPID_PUBLIC_KEY || "" });
 });
 
-// Registrar inscrição do aparelho
 app.post("/push/subscribe", (req, res) => {
   const sub = req.body;
   const key = subKey(sub);
@@ -84,15 +81,29 @@ app.post("/push/subscribe", (req, res) => {
   return res.json({ ok: true, total: subscriptions.size });
 });
 
-// Teste manual (opcional)
-app.post("/push/test", async (req, res) => {
+// ✅ agora dá pra testar abrindo no navegador
+app.get("/push/test", async (req, res) => {
+  const out = await pushToAll({
+    title: "Move Driver",
+    body: "Push de teste OK ✅",
+    url: "/"
+  });
+  if (!out.ok) return res.status(400).json(out);
+  return res.json(out);
+});
+
+// ✅ endpoint para o frontend disparar push quando motorista aceitar
+app.post("/push/notify", async (req, res) => {
   try {
-    await pushToAll({
-      title: "Move Driver",
-      body: "Push de teste OK ✅",
-      url: "/"
+    const { title, body, url, data } = req.body || {};
+    const out = await pushToAll({
+      title: title || "Move Driver — Motorista aceitou ✅",
+      body: body || "Um motorista aceitou uma corrida.",
+      url: url || "/",
+      data: data || {}
     });
-    return res.json({ ok: true });
+    if (!out.ok) return res.status(400).json(out);
+    return res.json(out);
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -100,7 +111,7 @@ app.post("/push/test", async (req, res) => {
 
 /* =========================================================
    MOVE DRIVER API
-========================================================= */
+   ========================================================= */
 
 // Criar corrida
 app.post("/rides", async (req, res) => {
@@ -151,26 +162,15 @@ app.post("/rides", async (req, res) => {
       return res.status(apiResp.status).json({ ok: false, details: data });
     }
 
-    // Tenta achar o ID já aqui (pra servidor monitorar e mandar push)
-    const id = findSolicitacaoIdDeep(data);
-    if (id) {
-      const { origem: o, destino: d } = req.body;
-      activeRides.set(Number(id), {
-        id: Number(id),
-        origem: (o || "").trim(),
-        destino: (d || "").trim(),
-        createdAt: Date.now(),
-        notified: false
-      });
-    }
+    const solicitacaoID = findSolicitacaoIdDeep(data);
 
-    return res.json({ ok: true, result: data, solicitacaoID: id || null });
+    return res.json({ ok: true, result: data, solicitacaoID: solicitacaoID || null });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 });
 
-// EtapaSolicitacao (motorista/placa/veiculo/status)
+// ✅ EtapaSolicitacao (endpoint correto)
 app.get("/rides/:id/etapa", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -200,7 +200,7 @@ app.get("/rides/:id/etapa", async (req, res) => {
   }
 });
 
-// Status geral (se existir)
+// (Opcional) Status geral — se existir
 app.get("/rides/:id/status", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -229,7 +229,7 @@ app.get("/rides/:id/status", async (req, res) => {
   }
 });
 
-// Cancelar
+// Cancelar solicitação
 app.post("/rides/:id/cancel", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -267,80 +267,7 @@ app.post("/rides/:id/cancel", async (req, res) => {
   }
 });
 
-/* =========================================================
-   SERVER-SIDE MONITOR (manda push mesmo se ninguém estiver no painel)
-========================================================= */
-
-const activeRides = new Map(); // id -> {origem,destino,notified,...}
-
-function isTripFinished(statusText) {
-  const t = String(statusText || "").toLowerCase();
-  return t.includes("finalizada") || t.includes("finalizado") || t.includes("concluída") || t.includes("concluido");
-}
-
-function pickStatusText(etapaObj) {
-  return etapaObj?.StatusSolicitacao || etapaObj?.statusSolicitacao || "";
-}
-
-async function fetchEtapaDirect(id) {
-  const url = `${process.env.MD_API_BASE_URL}/EtapaSolicitacao?solicitacaoID=${id}`;
-  const apiResp = await fetch(url, { method: "GET", headers: { "Authorization": basicAuthHeader() } });
-  const raw = await apiResp.text();
-  let data;
-  try { data = JSON.parse(raw); } catch { data = { raw }; }
-  if (!apiResp.ok) throw new Error(`EtapaSolicitacao ${apiResp.status}: ${raw}`);
-  return data?.EtapaSolicitacao ?? data?.etapaSolicitacao ?? data;
-}
-
-// loop a cada 15s
-setInterval(async () => {
-  if (activeRides.size === 0) return;
-
-  // se não tiver VAPID, não faz sentido monitorar push
-  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
-
-  for (const [id, ride] of activeRides.entries()) {
-    try {
-      const etapa = await fetchEtapaDirect(id);
-
-      const motorista = etapa?.NomePrestador || etapa?.nomePrestador || "";
-      const veiculo = etapa?.Veiculo || etapa?.veiculo || "";
-      const placa = etapa?.Placa || etapa?.placa || "";
-      const status = pickStatusText(etapa);
-
-      // se finalizou, tira do monitor do servidor
-      if (isTripFinished(status)) {
-        activeRides.delete(id);
-        continue;
-      }
-
-      // se motorista aceitou e ainda não notificou
-      if (motorista && !ride.notified) {
-        ride.notified = true;
-
-        await pushToAll({
-          title: "Move Driver — Motorista aceitou ✅",
-          body: `#${id} • ${motorista} • ${veiculo} • ${placa}`,
-          url: `/?open=${id}`,
-          data: {
-            id,
-            motorista,
-            veiculo,
-            placa,
-            origem: ride.origem,
-            destino: ride.destino
-          }
-        });
-      }
-    } catch {
-      // não remove por erro — pode ser instabilidade
-    }
-  }
-}, 15000);
-
-/* =========================================================
-   UTIL: achar solicitacaoID no JSON
-========================================================= */
+// achar solicitacaoID no JSON
 function findSolicitacaoIdDeep(obj) {
   const seen = new Set();
 
