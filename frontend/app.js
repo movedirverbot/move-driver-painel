@@ -14,14 +14,10 @@ const apiText = document.getElementById("apiText");
 
 const LS_KEY = "md_rides_open_v1";
 
-// IMPORTANTE (rate limit): endpoints com SolicitacaoID têm limite ~1 req a cada 15s por ID.
-// Então aqui a gente usa 16s por segurança. :contentReference[oaicite:2]{index=2}
+// Rate limit: manter ~16s por ID pra não estourar. 
 const POLL_MS = 16000;
 
 let rides = loadRides(); // mais recente primeiro
-
-// default de valor (você pode trocar)
-if (!valorEl.value) valorEl.value = "25,00";
 
 function setApiStatus(ok){
   apiDot.style.background = ok ? "var(--ok)" : "var(--danger)";
@@ -63,7 +59,7 @@ function parseNumberBR(v){
   return Number.isFinite(n) ? n : null;
 }
 
-// buzina simples (WebAudio) quando aceita (etapa >= 2)
+// buzina simples quando aceita
 function horn(){
   try{
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -88,7 +84,6 @@ function horn(){
     o1.start(now);
     o2.start(now);
 
-    // “buzina” curta com leve variação
     o1.frequency.linearRampToValueAtTime(180, now + 0.25);
     o2.frequency.linearRampToValueAtTime(260, now + 0.25);
 
@@ -103,7 +98,6 @@ function horn(){
 
 function render(){
   ridesListEl.innerHTML = "";
-
   emptyStateEl.style.display = rides.length ? "none" : "block";
 
   for (const r of rides){
@@ -133,7 +127,6 @@ function render(){
     leftBadges.appendChild(bStatus);
 
     top.appendChild(leftBadges);
-
     card.appendChild(top);
 
     const main = document.createElement("div");
@@ -204,6 +197,7 @@ btnLimpar.onclick = () => {
   origemEl.value = "";
   destinoEl.value = "";
   obsEl.value = "";
+  valorEl.value = ""; // ✅ também limpa valor
   origemEl.focus();
 };
 
@@ -211,7 +205,8 @@ btnCriar.onclick = async () => {
   const origem = origemEl.value.trim();
   const destino = destinoEl.value.trim();
   const obs = obsEl.value.trim();
-  const valorStr = valorEl.value.trim();
+
+  const valorStr = valorEl.value.trim(); // ✅ começa vazio por padrão
   const valorNum = parseNumberBR(valorStr);
 
   if (!origem || !destino){
@@ -219,7 +214,7 @@ btnCriar.onclick = async () => {
     return;
   }
 
-  // valor pode ser vazio (automático). Se digitou, tem que ser número.
+  // ✅ só valida se tiver preenchido
   if (valorStr && valorNum === null){
     alert("Valor inválido. Use por exemplo: 25,00");
     return;
@@ -232,7 +227,12 @@ btnCriar.onclick = async () => {
     const resp = await fetch("/rides", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ origem, destino, obs, valor: valorStr || "" })
+      body: JSON.stringify({
+        origem,
+        destino,
+        obs,
+        valor: valorStr // ✅ se vazio, backend não envia "Valor" e o sistema calcula
+      })
     });
 
     const data = await resp.json().catch(() => ({}));
@@ -245,20 +245,18 @@ btnCriar.onclick = async () => {
 
     const id = data.solicitacaoId;
     if (!id){
-      // Mesmo se não veio, a corrida pode ter criado. Aqui avisamos.
       alert("Corrida criada, mas não consegui ler o ID de retorno. Abra o console (F12) pra ver a resposta.");
       console.log("Resposta criar corrida:", data);
       return;
     }
 
-    // adiciona no topo
     rides.unshift({
       id,
       origem,
       destino,
       obs,
       createdAt: Date.now(),
-      valorInformado: data.valorInformado ?? valorNum,
+      valorInformado: data.valorInformado ?? (valorStr ? valorNum : null),
       statusTexto: "Pedido criado",
       etapa: null,
       motorista: null,
@@ -271,13 +269,13 @@ btnCriar.onclick = async () => {
     saveRides();
     render();
 
-    // limpa campos (mantém valor)
+    // limpa campos (✅ inclusive valor, pra não “fixar” sem querer)
     origemEl.value = "";
     destinoEl.value = "";
     obsEl.value = "";
+    valorEl.value = "";
     origemEl.focus();
 
-    // já atualiza essa nova
     await updateRide(id);
 
   }catch(e){
@@ -300,7 +298,7 @@ async function cancelRide(id){
       console.log(data);
       return;
     }
-    // não remove (você falou que não quer sumir canceladas etc.)
+
     const r = rides.find(x => x.id === id);
     if (r){
       r.statusTexto = "Cancelada";
@@ -314,7 +312,6 @@ async function cancelRide(id){
 }
 
 async function relaunchRide(r){
-  // lança outra com os mesmos endereços e mesmo valor informado
   try{
     const valorTxt = r.valorInformado != null ? String(r.valorInformado).replace(".", ",") : "";
     const resp = await fetch("/rides", {
@@ -324,6 +321,7 @@ async function relaunchRide(r){
         origem: r.origem,
         destino: r.destino,
         obs: r.obs || "",
+        // ✅ relança com o mesmo valor só se ele existia (senão automático)
         valor: valorTxt
       })
     });
@@ -348,7 +346,7 @@ async function relaunchRide(r){
       destino: r.destino,
       obs: r.obs || "",
       createdAt: Date.now(),
-      valorInformado: data.valorInformado ?? r.valorInformado,
+      valorInformado: data.valorInformado ?? r.valorInformado ?? null,
       statusTexto: "Pedido criado",
       etapa: null,
       motorista: null,
@@ -371,10 +369,10 @@ async function updateRide(id){
   const r = rides.find(x => x.id === id);
   if (!r) return;
 
-  // 1) etapa (nome/veículo/placa/viagem finalizada)
   try{
     const resp = await fetch(`/rides/${id}/etapa`);
     const data = await resp.json().catch(() => ({}));
+
     if (resp.ok && data.ok && data.etapa){
       r.etapa = data.etapa.Etapa ?? null;
       r.statusTexto = data.etapa.StatusSolicitacao || r.statusTexto;
@@ -384,6 +382,7 @@ async function updateRide(id){
       const placa = data.etapa.Placa || null;
 
       const justAccepted = (r.acceptedBeeped === false) && (Number(r.etapa) >= 2) && nome;
+
       r.motorista = nome;
       r.veiculo = veic;
       r.placa = placa;
@@ -393,9 +392,7 @@ async function updateRide(id){
         horn();
       }
 
-      // se finalizou, remove automaticamente (você pediu)
       if (data.etapa.ViagemFinalizada === true){
-        // antes de remover, tenta buscar valor final (opcional)
         await fetchValorFinal(id);
         rides = rides.filter(x => x.id !== id);
         saveRides();
@@ -403,14 +400,12 @@ async function updateRide(id){
         return;
       }
     }else{
-      // não estoura erro na tela — só deixa registrado
       console.log("Falha etapa", id, data);
     }
   }catch(e){
     console.log("Erro etapa", id, e);
   }
 
-  // 2) pega valor final quando possível (sem atrapalhar)
   await fetchValorFinal(id);
 
   saveRides();
@@ -427,16 +422,11 @@ async function fetchValorFinal(id){
     if (resp.ok && data.ok && data.solicitacao){
       const vf = data.solicitacao.crd_valor;
       if (vf != null) r.valorFinal = Number(vf);
-      // se quiser mapear status numérico:
-      // r.statusCodigo = data.solicitacao.crd_status;
     }
-  }catch(e){
-    // silencioso
-  }
+  }catch{}
 }
 
 async function pollAll(){
-  // atualiza do mais recente pro mais antigo
   for (const r of [...rides]){
     await updateRide(r.id);
   }
