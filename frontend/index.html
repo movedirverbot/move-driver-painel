@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Move Driver — Lançar Corrida</title>
   <link rel="stylesheet" href="./style.css" />
-  <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#f7c300">
-
 </head>
 <body>
   <header class="topbar">
@@ -22,41 +19,58 @@
     <div class="status">
       <span id="apiDot" class="dot"></span>
       <span id="apiText">Verificando...</span>
-      <button id="btnPush" class="btnPush">Ativar notificações</button>
-<span id="pushText" class="pushText"></span>
-
     </div>
   </header>
 
   <main class="container">
-    <section class="card formCard">
-      <div class="formTitle">Nova corrida</div>
+    <section class="card">
+      <div class="formRow">
+        <div class="grow">
+          <label class="label">Origem *</label>
+          <textarea id="origem" class="input" rows="2" placeholder="Rua, número, bairro"></textarea>
+        </div>
+      </div>
 
-      <label class="label">Origem <span class="req">*</span></label>
-      <textarea id="origem" class="input" rows="2" placeholder="Rua, número, bairro"></textarea>
+      <div class="formRow">
+        <div class="grow">
+          <label class="label">Destino *</label>
+          <textarea id="destino" class="input" rows="2" placeholder="Rua, número, bairro"></textarea>
+        </div>
+      </div>
 
-      <label class="label">Destino <span class="req">*</span></label>
-      <textarea id="destino" class="input" rows="2" placeholder="Rua, número, bairro"></textarea>
+      <div class="formRow split">
+        <div class="grow">
+          <label class="label">Valor fixo (R$)</label>
+          <input id="valor" class="input" inputmode="decimal" placeholder="Ex.: 25,00" />
+          <div class="hint">Se deixar vazio, o sistema calcula automaticamente.</div>
+        </div>
 
-      <label class="label">Obs (opcional)</label>
-      <textarea id="obs" class="input" rows="1" placeholder="Ponto de referência, portão, etc."></textarea>
+        <div class="grow">
+          <label class="label">Observação (opcional)</label>
+          <input id="obs" class="input" placeholder="Ex.: portão preto, tocar campainha..." />
+        </div>
+      </div>
 
       <div class="actions">
-        <button id="btnCriar" class="btn btnPrimary">CRIAR</button>
+        <button id="btnCriar" class="btn btnPrimary">CRIAR CORRIDA</button>
         <button id="btnLimpar" class="btn btnGhost">LIMPAR</button>
       </div>
     </section>
 
-    <section class="card listCard">
-      <div class="listHeader">
-        <div class="listTitle">Acompanhando</div>
-        <div class="listHint">Atualiza a cada 16s • Mais recente no topo</div>
-      </div>
-
+    <section class="card small">
+      <div class="fixedTitle">Corridas abertas</div>
       <div id="ridesList" class="ridesList"></div>
+      <div id="emptyState" class="emptyState">Nenhuma corrida no momento.</div>
+    </section>
 
-      <div id="emptyState" class="emptyState">
-        Nenhuma corrida em acompanhamento ainda.
+    <section class="card tiny">
+      <div class="fixedTitle">Configuração fixa</div>
+      <div class="fixedGrid">
+        <div><span class="k">Cidade/UF:</span> <span class="v">Coromandel–MG</span></div>
+        <div><span class="k">CEP padrão:</span> <span class="v">38550-000</span></div>
+        <div><span class="k">Cliente:</span> <span class="v">Padrão</span></div>
+        <div><span class="k">Serviço:</span> <span class="v">Padrão</span></div>
+        <div><span class="k">Pagamento:</span> <span class="v">Padrão</span></div>
       </div>
     </section>
   </main>
@@ -64,5 +78,3 @@
   <script src="./app.js"></script>
 </body>
 </html>
-
-
